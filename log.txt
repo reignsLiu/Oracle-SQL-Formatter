@@ -1,0 +1,549 @@
+import re
+
+import sqlparse
+
+from sqlparse import tokens as T
+
+
+
+
+
+# ---------------------------------------------------------------------------
+
+# Keyword uppercasing via sqlparse
+
+# ---------------------------------------------------------------------------
+
+
+
+def _uppercase_sql(sql):
+
+    """Uppercase everything except string literals and comments (preserve their casing)."""
+
+    parsed = sqlparse.parse(sql)
+
+    parts = []
+
+    for stmt in parsed:
+
+        for token in stmt.flatten():
+
+            if token.ttype in (T.String.Single, T.String.Double,
+
+                               T.Comment.Single, T.Comment.Multiline):
+
+                parts.append(token.value)
+
+            else:
+
+                parts.append(token.value.upper())
+
+    return "".join(parts)
+
+
+
+
+
+# ---------------------------------------------------------------------------
+
+# Line splitting — break single-line code blob into logical lines
+
+# ---------------------------------------------------------------------------
+
+
+
+BREAK_BEFORE = [
+
+    'BEGIN', 'DECLARE', 'EXCEPTION', 'END',
+
+    'ELSIF', 'ELSE', 'WHEN',
+
+    'SELECT', 'INSERT INTO', 'UPDATE', 'DELETE FROM', 'MERGE INTO',
+
+    'OPEN', 'CLOSE', 'FETCH', 'EXECUTE', 'COMMIT', 'ROLLBACK',
+
+    'RAISE', 'RETURN', 'EXIT', 'CONTINUE', 'GOTO',
+
+]
+
+
+
+SQL_CLAUSE = [' WHERE ', ' ORDER BY ', ' GROUP BY ', ' HAVING ']
+
+
+
+_BLOCK_ONLY = frozenset({
+
+    'BEGIN', 'DECLARE', 'EXCEPTION', 'LOOP', 'CASE', 'ELSE',
+
+})
+
+
+
+
+
+def _clean_line(line):
+
+    """Drop trailing `;` on lines that are bare block keywords or block headers (THEN/LOOP). Never strip from END compounds."""
+
+    s = line.strip()
+
+    if s.endswith(';'):
+
+        before = s[:-1].strip()
+
+        upper = before.upper()
+
+        if upper in _BLOCK_ONLY:
+
+            return line.rstrip(';')
+
+        if (upper.endswith(' THEN') or upper.endswith(' LOOP')) and not upper.startswith('END '):
+
+            return line.rstrip(';')
+
+    return line
+
+
+
+
+
+def _split_select(line):
+
+    has_sc = line.endswith(';')
+
+    content = line.rstrip(';').strip()
+
+    upper = content.upper()
+
+    if not upper.startswith('SELECT') or ' FROM ' not in upper:
+
+        return [line]
+
+    idx = upper.index(' FROM ')
+
+    select_part = content[:idx].strip()
+
+    rest = content[idx:].strip()
+
+    parts = [rest]
+
+    for clause in SQL_CLAUSE:
+
+        new_parts = []
+
+        for p in parts:
+
+            u = p.upper()
+
+            if clause in u:
+
+                ci = u.index(clause)
+
+                new_parts.append(p[:ci].strip())
+
+                new_parts.append(p[ci:].strip())
+
+            else:
+
+                new_parts.append(p)
+
+        parts = new_parts
+
+    result = [select_part] + parts
+
+    if has_sc and result:
+
+        result[-1] = result[-1] + ';'
+
+    return result
+
+
+
+
+
+def _split_code_segment(text):
+
+    text = re.sub(r'\s+', ' ', text).strip()
+
+    raw = []
+
+    for seg in text.split(';'):
+
+        s = seg.strip()
+
+        if s:
+
+            raw.append(s)
+
+    result = []
+
+    for stmt in raw:
+
+        for kw in BREAK_BEFORE:
+
+            pattern = r'(?<=\S)\s+\b' + re.escape(kw) + r'\b'
+
+            stmt = re.sub(pattern, '\n' + kw, stmt)
+
+        stmt = re.sub(r'\bTHEN\s+(?=[a-zA-Z(])', 'THEN\n', stmt)
+
+        stmt = re.sub(r'\bLOOP\s+(?=[a-zA-Z(])', 'LOOP\n', stmt)
+
+        lines = [l.strip() for l in stmt.split('\n') if l.strip()]
+
+        if lines:
+
+            lines[-1] = lines[-1] + ';'
+
+        for line in lines:
+
+            result.extend(_split_select(line))
+
+    return [_clean_line(l) for l in result]
+
+
+
+
+
+# ---------------------------------------------------------------------------
+
+# Indentation engine — stack‑based block tracking + SELECT clause alignment
+
+# ---------------------------------------------------------------------------
+
+
+
+SELECT_CLAUSE_STARTS = frozenset([
+
+    'FROM', 'WHERE', 'ORDER BY', 'GROUP BY', 'HAVING',
+
+])
+
+
+
+
+
+def _sw(text, prefix):
+
+    t = text.strip().upper()
+
+    p = prefix.upper()
+
+    return t == p or t.startswith(p + ' ') or t.startswith(p + ';')
+
+
+
+
+
+def _indent_lines(lines):
+
+    stack = [(0, None)]
+
+    result = []
+
+    in_select = False
+
+
+
+    def _pop_until(types):
+
+        while len(stack) > 1 and stack[-1][1] not in types:
+
+            stack.pop()
+
+        if len(stack) > 1 and stack[-1][1] in types:
+
+            stack.pop()
+
+
+
+    def _peek_parent(types):
+
+        for i in range(len(stack) - 1, -1, -1):
+
+            if stack[i][1] in types:
+
+                return stack[i][0]
+
+        return 0
+
+
+
+    def _body_indent():
+
+        return stack[-1][0] + 1 if stack[-1][1] is not None else 0
+
+
+
+    for line in lines:
+
+        stripped = line.strip()
+
+        if not stripped:
+
+            result.append("")
+
+            in_select = False
+
+            continue
+
+
+
+        if stripped.startswith('--'):
+
+            result.append("    " * _body_indent() + stripped)
+
+            in_select = False
+
+            continue
+
+
+
+        upper = stripped.upper()
+
+
+
+        # ── BEFORE (pop blocks) ──
+
+        if _sw(upper, 'END IF'):
+
+            _pop_until({'if', 'else', 'elsif'})
+
+        elif _sw(upper, 'END LOOP'):
+
+            _pop_until({'loop', 'for', 'while'})
+
+        elif _sw(upper, 'END CASE'):
+
+            _pop_until({'case'})
+
+        elif upper == 'END' or upper.startswith('END ') or upper.startswith('END;'):
+
+            _pop_until({'begin', 'declare'})
+
+        elif upper.startswith('EXCEPTION'):
+
+            pass
+
+        elif upper == 'ELSE':
+
+            _pop_until({'if', 'elsif'})
+
+        elif _sw(upper, 'ELSIF'):
+
+            _pop_until({'if', 'elsif'})
+
+        elif _sw(upper, 'WHEN') and upper.rstrip().endswith('THEN'):
+
+            while len(stack) > 1 and stack[-1][1] == 'when':
+
+                stack.pop()
+
+
+
+        # ── Compute base block indent ──
+
+        indent = _body_indent()
+
+        if upper.startswith('EXCEPTION'):
+
+            indent = _peek_parent({'begin', 'declare'})
+
+        elif _sw(upper, 'WHEN') and upper.rstrip().endswith('THEN'):
+
+            indent = _peek_parent({'exception'}) + 1
+
+
+
+        # ── SELECT clause 2‑space offset ──
+
+        extra = 0
+
+        if upper.startswith('SELECT'):
+
+            in_select = True
+
+        elif in_select:
+
+            first_word = upper.split()[0] if upper.split() else ''
+
+            if first_word in ('FROM', 'AND', 'OR', 'INTO'):
+
+                extra = 1
+
+            elif first_word in ('WHERE', 'ORDER BY', 'GROUP BY', 'HAVING'):
+
+                in_select = False  # back to base indent
+
+
+
+        base = "    " * indent
+
+        line_out = base + ("  " if extra else "") + stripped
+
+        result.append(line_out)
+
+
+
+        # ── AFTER (push blocks) ──
+
+        if upper == 'BEGIN' or upper == 'DECLARE':
+
+            stack.append((indent, 'begin' if upper == 'BEGIN' else 'declare'))
+
+        elif upper.startswith('EXCEPTION'):
+
+            stack.append((indent, 'exception'))
+
+        elif _sw(upper, 'WHEN') and upper.rstrip().endswith('THEN'):
+
+            stack.append((indent, 'when'))
+
+        elif upper == 'ELSE':
+
+            stack.append((indent, 'else'))
+
+        elif _sw(upper, 'ELSIF') and upper.rstrip().endswith('THEN'):
+
+            stack.append((indent, 'elsif'))
+
+        elif upper == 'LOOP':
+
+            stack.append((indent, 'loop'))
+
+        elif _sw(upper, 'IF') and upper.rstrip().endswith('THEN'):
+
+            stack.append((indent, 'if'))
+
+        elif (_sw(upper, 'FOR') or _sw(upper, 'WHILE')) and upper.rstrip().endswith('LOOP'):
+
+            stack.append((indent, 'for' if _sw(upper, 'FOR') else 'while'))
+
+        elif upper.rstrip().endswith('LOOP') and not _sw(upper, 'END LOOP'):
+
+            # catches bare LOOP or multi-line FOR ... LOOP
+
+            stack.append((indent, 'loop'))
+
+        elif _sw(upper, 'CASE'):
+
+            stack.append((indent, 'case'))
+
+
+
+    return result
+
+
+
+
+
+# ---------------------------------------------------------------------------
+
+# Public API
+
+# ---------------------------------------------------------------------------
+
+
+
+def format_oracle_sql(sql):
+
+    if not sql or not sql.strip():
+
+        return ""
+
+
+
+    # Segment input into comment / code bands, respecting statement boundaries
+
+    raw_lines = sql.split('\n')
+
+    segments = []
+
+    code_buf = []
+
+
+
+    _BLOCK_FLUSH = frozenset({
+
+        'BEGIN', 'DECLARE', 'EXCEPTION', 'END',
+
+        'ELSE', 'ELSIF', 'LOOP', 'CASE',
+
+    })
+
+
+
+    def _should_flush(s):
+
+        if not s.strip():
+
+            return False
+
+        if s.rstrip().endswith(';'):
+
+            return True
+
+        first = s.strip().upper().split()[0]
+
+        return first in _BLOCK_FLUSH
+
+
+
+    def flush_code():
+
+        if code_buf:
+
+            segments.append(('code', '\n'.join(code_buf)))
+
+            code_buf.clear()
+
+
+
+    for line in raw_lines:
+
+        s = line.strip()
+
+        if s.startswith('--'):
+
+            flush_code()
+
+            segments.append(('comment', s))
+
+        elif s:
+
+            code_buf.append(s)
+
+            if _should_flush(s):
+
+                flush_code()
+
+
+
+    flush_code()
+
+
+
+    # Format each segment
+
+    all_lines = []
+
+    for typ, content in segments:
+
+        if typ == 'comment':
+
+            all_lines.append(content)
+
+        else:
+
+            all_lines.extend(_split_code_segment(_uppercase_sql(content)))
+
+
+
+    # Apply block indentation + SELECT alignment
+
+    all_lines = _indent_lines(all_lines)
+
+    return "\n".join(all_lines)
+
+优化以上格式化oracle存储过程的代码，尤其是多行注释和for循环。你整体审视一下代码，优化其使得更符合人类的阅读习惯，但是不要改变外部调用方式
