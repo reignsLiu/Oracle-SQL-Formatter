@@ -1,7 +1,7 @@
 # Oracle SQL Formatter — Oracle PL/SQL 智能格式化引擎
 
 一键格式化混乱的 Oracle 存储过程、函数、匿名块，支持关键字大写、4 空格缩进、`BEGIN..END`/`IF..THEN`/`LOOP`/`CASE`/游标等复杂块结构。
-
+** 本项目通过open code开发 **
 ## 功能特性
 
 - **关键字全大写** — `create or replace` → `CREATE OR REPLACE`
@@ -30,7 +30,7 @@
 
 ```bash
 # 1. 克隆仓库
-git clone <repo-url> && cd <repo-dir>
+git clone https://github.com/reignsLiu/Oracle-SQL-Formatter.git && cd Oracle-SQL-Formatter
 
 # 2. 安装依赖
 pip install -r backend/requirements.txt
