@@ -74,7 +74,7 @@ uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 
 ```bash
 pip install gunicorn
-gunicorn backend.main:app -w 4 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000
+nohup gunicorn backend.main:app -w 4 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8001 > gunicorn.log 2>&1 &
 ```
 
 或使用 Docker（需自行编写 `Dockerfile`）：

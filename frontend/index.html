@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Oracle SQL Formatter</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="lib/tailwind.js"></script>
     <script>
         tailwind.config = {
             theme: {
@@ -64,6 +64,36 @@
         .monaco-editor .monaco-editor-background {
             background-color: #1e293b !important;
         }
+
+        /* Fullscreen output editor */
+        #outputEditor:fullscreen {
+            border: none;
+            border-radius: 0;
+            padding: 0;
+        }
+        #outputEditor:fullscreen .editor-label {
+            padding-left: 1.5rem;
+            padding-right: 1.5rem;
+        }
+        #outputEditor:fullscreen .monaco-editor-container {
+            height: calc(100% - 2.5rem);
+        }
+        .fullscreen-btn {
+            background: none;
+            border: none;
+            color: #64748b;
+            cursor: pointer;
+            padding: 2px 4px;
+            border-radius: 4px;
+            transition: color 0.15s, background 0.15s;
+            display: flex;
+            align-items: center;
+            margin-left: 6px;
+        }
+        .fullscreen-btn:hover {
+            color: #e2e8f0;
+            background: #334155;
+        }
     </style>
 </head>
 <body>
@@ -110,7 +140,14 @@
                 <div id="outputEditor" class="editor-box flex-1">
                     <div class="editor-label">
                         <span>格式化输出</span>
-                        <span id="outputStats" class="text-slate-500 text-[10px] font-normal">0 行</span>
+                        <div class="flex items-center gap-1">
+                            <button id="fullscreenBtn" class="fullscreen-btn" title="全屏查看">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"/>
+                                </svg>
+                            </button>
+                            <span id="outputStats" class="text-slate-500 text-[10px] font-normal">0 行</span>
+                        </div>
                     </div>
                     <div id="outputMonaco" class="monaco-editor-container"></div>
                 </div>
@@ -124,12 +161,12 @@
         </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
+    <script src="lib/monaco/min/vs/loader.js"></script>
     <script>
         const API_URL = '/api/format';
 
         require.config({
-            paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs' }
+            paths: { vs: 'lib/monaco/min/vs' }
         });
 
         require(['vs/editor/editor.main'], function () {
@@ -303,6 +340,34 @@
                 inputEditor.setValue('');
                 outputEditor.setValue('-- 点击 "格式化" 按钮查看结果');
                 document.getElementById('statusBar').querySelector('span:first-child').textContent = '已清空';
+            });
+
+            // Fullscreen output editor
+            const fullscreenBtn = document.getElementById('fullscreenBtn');
+            const outputEditorBox = document.getElementById('outputEditor');
+
+            function updateFullscreenIcon() {
+                const isFS = !!document.fullscreenElement;
+                fullscreenBtn.innerHTML = isFS
+                    ? `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 9V4.5M9 9H4.5M9 9L3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9h4.5M15 9V4.5M15 9l5.25-5.25M15 15h4.5M15 15v4.5m0-4.5l5.25 5.25"/>
+                       </svg>`
+                    : `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"/>
+                       </svg>`;
+            }
+
+            fullscreenBtn.addEventListener('click', function () {
+                if (document.fullscreenElement) {
+                    document.exitFullscreen();
+                } else {
+                    outputEditorBox.requestFullscreen();
+                }
+            });
+
+            document.addEventListener('fullscreenchange', function () {
+                setTimeout(function () { outputEditor.layout(); }, 100);
+                updateFullscreenIcon();
             });
 
         document.addEventListener('keydown', function (e) {
